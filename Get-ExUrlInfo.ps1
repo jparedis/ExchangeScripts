@@ -1,6 +1,8 @@
 Function Get-ExUrlInfo
     {
 
+        
+
         try {$null = get-excommand}
 catch [System.Management.Automation.CommandNotFoundException] {Write-Warning "This script must be run in the Exchange Management Shell"; break;}
     
@@ -102,3 +104,4 @@ $obj6 = $oabinfo | ConvertTo-HTML -PreContent "<h2>Offline Address Book Virtual 
 $obj7 = $mailboxinfo | ConvertTo-HTML -PreContent "<h2>Number of mailboxes per server</h2>" -Fragment |Out-String 
 ConvertTo-Html -Head $head -PreContent "<h1>Get-ClientAccessConfig.ps1</h1>" -PostContent $obj7,$obj0,$obj1,$obj2,$obj3,$obj4,$obj5,$obj6 |Out-File C:\temp\test1.html
 }
+#
