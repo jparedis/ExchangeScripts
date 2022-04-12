@@ -19,7 +19,7 @@ Function Get-ExUrlInfo
 
    Credits: heavily inspired on Get-VirDirInfo.ps1 from Michael Van Horenbeeck (https://github.com/enptmps/MessagingDiscovery/blob/master/get-virdirinfo v1.7 (1).ps1), which I used many times before.
    At the time of script creation I did not have the sources available. This script will therefore not be an exact copy with the exact same approach and possibilities, but it must be duely noted that I was not the first to come up with this idea.
-   I tested it with all newest versions of Exchange Server, and added some additional information (IP addresses of both Exchange Servers and used namespaces, ...)
+   I tested it with all newest versions of Exchange Server, and added some additional information (IP addresses of both Exchange Servers (local) and used namespaces (local and WAN), ...)
 
    Requirements:
    - this script is a function. It has to be dot-sourced first, and then called. 
@@ -29,7 +29,6 @@ Function Get-ExUrlInfo
 
 # defining variables and arrays
 $versioncontent = @()
-$mailboxperserver = @()
 $srvcontent = @()
 $owacontent = @()
 $ecpcontent = @()
@@ -76,19 +75,11 @@ $allexarray += $all2019exchangeservers
  $count2013 = $all2013exchangeservers.Count
  $count2016 = $all2016exchangeservers.Count
  $count2019 = $all2019exchangeservers.Count
- #$allexarray = $all2010exchangeservers
 
-  
-#$allex = $allexarray | ForEach-Object { new-object PSObject -Property $_}
-$allexarray
-Write-Host "see aboveaa"
+
     foreach ($item in $allexarray)
 {
 Write-Host "gathering data from $item.Name"
-
-
-#$mailboxperserver += @{Name=$item.Name;Count=(Get-Mailbox -Server $item.Name -ResultSize "Unlimited").Count}
-#$mailboxinfo = $mailboxperserver | ForEach-Object { new-object PSObject -Property $_} |Select Name,Count
 
 
 $versioncontent = @{EX2010=$count2010;EX2013=$count2013;EX2016=$count2016;EX2019=$count2019}
