@@ -1,12 +1,54 @@
 Function Get-ExUrlInfo
     {
 
-        
 
-        try {$null = get-excommand}
+<#
+.SYNOPSIS
+   Reads the actual Virtual Directory configuration for the active Exchange Organization and crafts an HTML-based report
+
+.DESCRIPTION
+   This function is written to quickly gain an overview of all Virtual Directories within Exchange Server. 
+   I Use it all the time when performing assessments or drafting roadmaps for Exchange Server Migrations.
+   This script is tested with Exchange Server 2010, Exchange Server 2016 and Exchange Server 2019
+
+.EXAMPLE
+   Get-ExUrlInfo
+
+
+
+.NOTES
+   Author: Jente Paredis - jente@jentech.be
+
+   Credits: heavily inspired on Get-VirDirInfo.ps1 from Michael Van Horenbeeck (https://github.com/enptmps/MessagingDiscovery/blob/master/get-virdirinfo v1.7 (1).ps1), which I used many times before.
+   At the time of script creation I did not have the sources available. This script will therefore not be an exact copy with the exact same approach and possibilities, but it must be duely noted that I was not the first to come up with this idea.
+   I tested it with all newest versions of Exchange Server, and added some additional information (IP addresses of both Exchange Servers and used namespaces, ...)
+
+   Requirements:
+   - this script is a function. It has to be dot-sourced first, and then called. 
+   - It requires to be run within an Exchange Management Shell (or have the Exchange Commandlets otherwise available)
+
+#>
+
+# defining variables and arrays
+$versioncontent = @()
+$mailboxperserver = @()
+$srvcontent = @()
+$owacontent = @()
+$ecpcontent = @()
+$ewscontent = @()
+$asynccontent = @()
+$oabcontent = @()
+$allex = "" 
+
+# validating that the session the script is ran in has the proper commandlets loaded. If this is not the case, the scripts stops.
+try {$null = get-excommand}
 catch [System.Management.Automation.CommandNotFoundException] {Write-Warning "This script must be run in the Exchange Management Shell"; break;}
-    
-Write-Information "Exchange Powershell Commandlets are detected. Continuing..."
+
+#nothing's wrong, continuing...
+Write-Host "Exchange Powershell Commandlets are detected. Continuing..." -ForegroundColor "Green"
+
+
+# crafting CSS to format the HTML File that will be the output of thie function.
         $head = @'
 <style>
 body { background-color:white; font-family:Calibri; font-size:12pt; }
@@ -22,31 +64,26 @@ h2 {color:#00004d;}
 '@
 
 
-        $allex = Get-ExchangeServer
-        $all2010exchangeservers = Get-ExchangeServer |Where-Object {($_.AdminDisplayVersion).Major -eq "14"}
-        $all2013exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "0") }
-        $all2016exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "1") }
-        $all2019exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "2") }
-        $count2010 = $all2010exchangeservers.Count
-        $count2013 = $all2013exchangeservers.Count
-        $count2016 = $all2016exchangeservers.Count
-        $count2019 = $all2019exchangeservers.Count
+# retrieving all exchange servers performing client access activities
+$all2010exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "14") -and ($_.ServerRole -eq "ClientAccess")}
+$all2013exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "0") -and ($_.ServerRole -eq "ClientAccess")}
+$all2016exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "1") }
+$all2019exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "2") }
 
+$allex += $all2010exchangeservers
+$allex += $all2013exchangeservers
+$allex += $all2016exchangeservers
+$allex += $all2019exchangeservers
 
+ $count2010 = $all2010exchangeservers.Count
+ $count2013 = $all2013exchangeservers.Count
+ $count2016 = $all2016exchangeservers.Count
+ $count2019 = $all2019exchangeservers.Count
 
-$versioncontent = @()
-$mailboxperserver = @()
-$srvcontent = @()
-$owacontent = @()
-$ecpcontent = @()
-$ewscontent = @()
-$asynccontent = @()
-$oabcontent = @()
-
-
+  
 
     foreach ($item in $allex)
-    {
+{
 
 
 
