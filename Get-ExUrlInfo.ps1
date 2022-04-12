@@ -14,8 +14,6 @@ Function Get-ExUrlInfo
 .EXAMPLE
    Get-ExUrlInfo
 
-
-
 .NOTES
    Author: Jente Paredis - jente@jentech.be
 
@@ -37,8 +35,9 @@ $owacontent = @()
 $ecpcontent = @()
 $ewscontent = @()
 $asynccontent = @()
-$oabcontent = @()
-$allex = "" 
+$oabcontent = @() 
+$urllist = @()
+$hostnamecontent = @()
 
 # validating that the session the script is ran in has the proper commandlets loaded. If this is not the case, the scripts stops.
 try {$null = get-excommand}
@@ -48,7 +47,7 @@ catch [System.Management.Automation.CommandNotFoundException] {Write-Warning "Th
 Write-Host "Exchange Powershell Commandlets are detected. Continuing..." -ForegroundColor "Green"
 
 
-# crafting CSS to format the HTML File that will be the output of thie function.
+# crafting CSS to format the HTML File that will be the output of the function.
         $head = @'
 <style>
 body { background-color:white; font-family:Calibri; font-size:12pt; }
@@ -58,37 +57,38 @@ table, tr, td, th { padding: 2px; margin: 0px }
 table { margin-left:50px; }
 h1 {text-align: center; color:#00004d;}
 h2 {color:#00004d;}
-
 </style>
 
 '@
 
 
 # retrieving all exchange servers performing client access activities
-$all2010exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "14") -and ($_.ServerRole -eq "ClientAccess")}
-$all2013exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "0") -and ($_.ServerRole -eq "ClientAccess")}
+$all2010exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "14") -and ($_.ServerRole -like "*ClientAccess*")}
+$all2013exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "0") -and ($_.ServerRole -like "*ClientAccess*")}
 $all2016exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "1") }
 $all2019exchangeservers = Get-ExchangeServer |Where-Object {(($_.AdminDisplayVersion).Major -eq "15") -and (($_.AdminDisplayVersion).Minor -eq "2") }
 
-$allex += $all2010exchangeservers
-$allex += $all2013exchangeservers
-$allex += $all2016exchangeservers
-$allex += $all2019exchangeservers
-
+$allexarray += $all2010exchangeservers
+$allexarray += $all2013exchangeservers
+$allexarray += $all2016exchangeservers
+$allexarray += $all2019exchangeservers
  $count2010 = $all2010exchangeservers.Count
  $count2013 = $all2013exchangeservers.Count
  $count2016 = $all2016exchangeservers.Count
  $count2019 = $all2019exchangeservers.Count
+ #$allexarray = $all2010exchangeservers
 
   
-
-    foreach ($item in $allex)
+#$allex = $allexarray | ForEach-Object { new-object PSObject -Property $_}
+$allexarray
+Write-Host "see aboveaa"
+    foreach ($item in $allexarray)
 {
+Write-Host "gathering data from $item.Name"
 
 
-
-$mailboxperserver += @{Name=$item.Name;Count=(Get-Mailbox -Server $item.Name -ResultSize "Unlimited").Count}
-$mailboxinfo = $mailboxperserver | ForEach-Object { new-object PSObject -Property $_} |Select Name,Count
+#$mailboxperserver += @{Name=$item.Name;Count=(Get-Mailbox -Server $item.Name -ResultSize "Unlimited").Count}
+#$mailboxinfo = $mailboxperserver | ForEach-Object { new-object PSObject -Property $_} |Select Name,Count
 
 
 $versioncontent = @{EX2010=$count2010;EX2013=$count2013;EX2016=$count2016;EX2019=$count2019}
@@ -97,39 +97,60 @@ $versioninfo = $versioncontent |  ForEach-Object { new-object PSObject -Property
     $major = $item.AdminDisplayversion.Major
     $minor = $item.AdminDisplayVersion.Minor
     $serverversion = "$major.$minor"
-    $srvcontent+= @{Name=$item.Name; ServerRole=$item.ServerRole; Version=$serverversion}
-    $srvinfo = $srvcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,Version,ServerRole
+    $srvcontent+= @{Name=$item.Name; ServerRole=$item.ServerRole; Version=$serverversion; IP=(Resolve-DnsName $item.Name).IPAddress}
+    $srvinfo = $srvcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,Version,ServerRole,IP
 
+   
     $owadata = Get-OwaVirtualDirectory -Server $item.Name
-    $intauth = $owadata.InternalAuthenticationMethods |Out-String
-    $extauth = $owadata.InternalAuthenticationMethods |Out-String
-    $owacontent+= @{Name=$item.Name; InternalURL=$owadata.InternalURL; ExternalURL=$owadata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth}
+    $owacontent+= @{Name=$item.Name; InternalURL=$owadata.InternalURL; ExternalURL=$owadata.ExternalURL; InternalAuth=($owadata.InternalAuthenticationMethods |Out-String); ExternalAuth=($owadata.InternalAuthenticationMethods |Out-String)}
     $owainfo = $owacontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth
+    [array]$urllist += [string]$owadata.InternalURL 
 
     $ecpdata = Get-EcpVirtualDirectory -Server $item.Name
-    $intauth = $ecpdata.InternalAuthenticationMethods |Out-String
-    $extauth = $ecpdata.InternalAuthenticationMethods |Out-String
-    $ecpcontent+= @{Name=$item.Name; InternalURL=$ecpdata.InternalURL; ExternalURL=$ecpdata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth}
+    $ecpcontent+= @{Name=$item.Name; InternalURL=$ecpdata.InternalURL; ExternalURL=$ecpdata.ExternalURL; InternalAuth=($ecpdata.InternalAuthenticationMethods |Out-String); ExternalAuth=($extauth = $ecpdata.InternalAuthenticationMethods |Out-String)}
     $ecpinfo = $ecpcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth
+    [array]$urllist += [string]$ecpdata.InternalURL 
 
     $ewsdata = Get-WebServicesVirtualDirectory -Server $item.Name
-    $intauth = $ewsdata.InternalAuthenticationMethods |Out-String
-    $extauth = $ewsdata.InternalAuthenticationMethods |Out-String
-    $ewscontent+= @{Name=$item.Name; InternalURL=$ewsdata.InternalURL; ExternalURL=$ewsdata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth;MRSProxyEnabled=$ewsdata.MRSProxyEnabled}
+    $ewscontent+= @{Name=$item.Name; InternalURL=$ewsdata.InternalURL; ExternalURL=$ewsdata.ExternalURL; InternalAuth=($ewsdata.InternalAuthenticationMethods |Out-String); ExternalAuth=($ewsdata.InternalAuthenticationMethods |Out-String);MRSProxyEnabled=$ewsdata.MRSProxyEnabled}
     $ewsinfo = $ewscontent |ForEach-Object { new-object PSObject -Property $_} | select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth,MRSProxyEnabled
+    [array]$urllist += [string]$ewsdata.InternalURL 
 
     $asyncdata = Get-ActiveSyncVirtualDirectory -Server $item.Name
-    $intauth = $asyncdata.InternalAuthenticationMethods |Out-String
-    $extauth = $asyncdata.InternalAuthenticationMethods |Out-String
     $asynccontent+= @{Name=$item.Name; InternalURL=$asyncdata.InternalURL; ExternalURL=$asyncdata.ExternalURL; BasicAuthEnabled=$asyncdata.BasicAuthEnabled; WindowsAuthEnabled=$asyncdata.WindowsAuthEnabled;ClientCertAuth=$asyncdata.ClientCertAuth}
     $asyncinfo = $asynccontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,BasicAuthEnabled,WindowsAuthEnabled,ClientCertAuth
+    [array]$urllist += [string]$asyncdata.InternalURL 
 
     $oabdata = Get-OabVirtualDirectory -Server $item.Name
-    $intauth = $oabdata.InternalAuthenticationMethods |Out-String
-    $extauth = $oabdata.InternalAuthenticationMethods |Out-String
-    $oabcontent+= @{Name=$item.Name; InternalURL=$oabdata.InternalURL; ExternalURL=$oabdata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth}
+    $oabcontent+= @{Name=$item.Name; InternalURL=$oabdata.InternalURL; ExternalURL=$oabdata.ExternalURL; InternalAuth=($oabdata.InternalAuthenticationMethods |Out-String); ExternalAuth=($oabdata.InternalAuthenticationMethods |Out-String)}
     $oabinfo = $oabcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth
+    [array]$urllist += [string]$oabdata.InternalURL 
+
+  
     }
+
+
+foreach ($item in $urllist)
+{
+$fullurl = [System.Uri]$item
+[array]$hostname += $fullurl.Host
+}
+
+$uniquehostnames = $hostname |Get-Unique -AsString
+foreach ($item in $uniquehostnames)
+{
+
+
+   $ip = (Resolve-DnsName $item).IPAddress | Out-String
+   if ((Test-NetConnection -ComputerName 8.8.8.8 -Port 53).TcpTestSucceeded -eq $True) {$wip = (Resolve-DNSName $item -Server 8.8.8.8).IPAddress | Out-String} else {$wip="DNS not responding."}
+
+   $hostnamecontent += @{Hostname=$item; LocalIP=$ip;WanIP=$wip}
+   $hostnameinfo = $hostnamecontent |ForEach-Object { new-object PSObject -Property $_} |select hostname,localIP,WanIP
+
+}
+
+
+
 
 $obj0 = $versioninfo | ConvertTo-HTML -PreContent "<h2>Exchange Version Information</h2>" -Fragment |Out-String
 $obj1 = $srvinfo | ConvertTo-HTML -PreContent "<h2>Server Information</h2>" -Fragment |Out-String
@@ -138,7 +159,8 @@ $obj3 = $ecpinfo | ConvertTo-HTML -PreContent "<h2>ECP Virtual Directory Configu
 $obj4 = $ewsinfo | ConvertTo-HTML -PreContent "<h2>Web Services Virtual Directory Configuration</h2>" -Fragment |Out-String
 $obj5 = $asyncinfo | ConvertTo-HTML -PreContent "<h2>ActiveSync Virtual Directory Configuration</h2>" -Fragment |Out-String
 $obj6 = $oabinfo | ConvertTo-HTML -PreContent "<h2>Offline Address Book Virtual Directory Configuration</h2>" -Fragment |Out-String 
-$obj7 = $mailboxinfo | ConvertTo-HTML -PreContent "<h2>Number of mailboxes per server</h2>" -Fragment |Out-String 
-ConvertTo-Html -Head $head -PreContent "<h1>Get-ClientAccessConfig.ps1</h1>" -PostContent $obj7,$obj0,$obj1,$obj2,$obj3,$obj4,$obj5,$obj6 |Out-File C:\temp\test1.html
+#$obj7 = $mailboxinfo | ConvertTo-HTML -PreContent "<h2>Number of mailboxes per server</h2>" -Fragment |Out-String
+$obj8 = $hostnameinfo |ConvertTo-Html -PreContent "<h2>Detected hostnames in Virtual Directories</h2>" -Fragment |Out-String
+ConvertTo-Html -Head $head -PreContent "<h1>Get-ClientAccessConfig.ps1</h1>" -PostContent $obj0,$obj1,$obj8,$obj2,$obj3,$obj4,$obj5,$obj6 |Out-File C:\temp\test1.html
 }
 #
