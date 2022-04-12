@@ -37,6 +37,8 @@ $asynccontent = @()
 $oabcontent = @() 
 $urllist = @()
 $hostnamecontent = @()
+$autodcontent = @()
+$mapicontent = @()
 
 # validating that the session the script is ran in has the proper commandlets loaded. If this is not the case, the scripts stops.
 try {$null = get-excommand}
@@ -71,6 +73,7 @@ $allexarray += $all2010exchangeservers
 $allexarray += $all2013exchangeservers
 $allexarray += $all2016exchangeservers
 $allexarray += $all2019exchangeservers
+
  $count2010 = $all2010exchangeservers.Count
  $count2013 = $all2013exchangeservers.Count
  $count2016 = $all2016exchangeservers.Count
@@ -79,7 +82,7 @@ $allexarray += $all2019exchangeservers
 
     foreach ($item in $allexarray)
 {
-Write-Host "gathering data from $item.Name"
+Write-Host "gathering data for server $item"
 
 
 $versioncontent = @{EX2010=$count2010;EX2013=$count2013;EX2016=$count2016;EX2019=$count2019}
@@ -88,10 +91,9 @@ $versioninfo = $versioncontent |  ForEach-Object { new-object PSObject -Property
     $major = $item.AdminDisplayversion.Major
     $minor = $item.AdminDisplayVersion.Minor
     $serverversion = "$major.$minor"
-    $srvcontent+= @{Name=$item.Name; ServerRole=$item.ServerRole; Version=$serverversion; IP=(Resolve-DnsName $item.Name).IPAddress}
+    $srvcontent+= @{Name=$item.Name; ServerRole=$item.ServerRole; Version=$serverversion; IP=(Resolve-DnsName $item.Name).IPAddress  |Out-String}
     $srvinfo = $srvcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,Version,ServerRole,IP
 
-   
     $owadata = Get-OwaVirtualDirectory -Server $item.Name
     $owacontent+= @{Name=$item.Name; InternalURL=$owadata.InternalURL; ExternalURL=$owadata.ExternalURL; InternalAuth=($owadata.InternalAuthenticationMethods |Out-String); ExternalAuth=($owadata.InternalAuthenticationMethods |Out-String)}
     $owainfo = $owacontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth
@@ -117,8 +119,25 @@ $versioninfo = $versioncontent |  ForEach-Object { new-object PSObject -Property
     $oabinfo = $oabcontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth
     [array]$urllist += [string]$oabdata.InternalURL 
 
+    $autoddata = get-clientaccessservice -Identity $item.Name
+    $autodcontent += @{Name=$item.Name; AutoDiscoverServiceInternalUri=$autoddata.AutoDiscoverServiceInternalUri; AutodiscoverSiteScope=($autoddata.AutodiscoverSiteScope|Out-String)}
+    $autodinfo = $autodcontent | ForEach-Object { new-object PSObject -Property $_} |select-Object Name,AutoDiscoverServiceInternalUri,AutoDiscoverSiteScope
+    [array]$urllist += [string]$autoddata.AutoDiscoverServiceInternalUri 
   
     }
+
+    foreach ($item in $allex |Where-Object {$_.AdminDisplayversion.Major -ge "15"})
+    {
+    $mapidata = get-mapivirtualdirectory -server $item.Name
+    $intauth = $mapidata.InternalAuthenticationMethods |Out-String
+    $extauth = $mapidata.ExternalAuthenticationMethods |Out-String
+    $iisauth = $mapidata.IISAuthenticationMethods | Out-String
+    $mapicontent += @{Name=$item.Name; InternalURL=$oabdata.InternalURL; ExternalURL=$oabdata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth; IISAuthenticationMethods=$iisauth}
+    $mapiinfo = $mapicontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth,IISAuthenticationMethods 
+    [array]$urllist += [string]$mapidata.InternalURL
+    }
+
+
 
 
 foreach ($item in $urllist)
@@ -152,6 +171,8 @@ $obj5 = $asyncinfo | ConvertTo-HTML -PreContent "<h2>ActiveSync Virtual Director
 $obj6 = $oabinfo | ConvertTo-HTML -PreContent "<h2>Offline Address Book Virtual Directory Configuration</h2>" -Fragment |Out-String 
 #$obj7 = $mailboxinfo | ConvertTo-HTML -PreContent "<h2>Number of mailboxes per server</h2>" -Fragment |Out-String
 $obj8 = $hostnameinfo |ConvertTo-Html -PreContent "<h2>Detected hostnames in Virtual Directories</h2>" -Fragment |Out-String
-ConvertTo-Html -Head $head -PreContent "<h1>Get-ClientAccessConfig.ps1</h1>" -PostContent $obj0,$obj1,$obj8,$obj2,$obj3,$obj4,$obj5,$obj6 |Out-File C:\temp\test1.html
+$obj9 = $mapiinfo |ConvertTo-Html -PreContent "<h2>MAPI Virtual Directory Configuration (EX2013 and up)</h2>" -Fragment |Out-String
+$obj10 = $autodinfo |ConvertTo-Html -PreContent "<h2>AutoDiscover Information</h2>" -Fragment |Out-String
+ConvertTo-Html -Head $head -PreContent "<h1>Get-ClientAccessConfig.ps1</h1>" -PostContent $obj0,$obj1,$obj8,$obj2,$obj3,$obj4,$obj5,$obj6,$obj9,$obj10 |Out-File C:\temp\test1.html
 }
 #
