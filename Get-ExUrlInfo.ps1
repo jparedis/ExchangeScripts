@@ -132,7 +132,7 @@ $versioninfo = $versioncontent |  ForEach-Object { new-object PSObject -Property
     $intauth = $mapidata.InternalAuthenticationMethods |Out-String
     $extauth = $mapidata.ExternalAuthenticationMethods |Out-String
     $iisauth = $mapidata.IISAuthenticationMethods | Out-String
-    $mapicontent += @{Name=$item.Name; InternalURL=$oabdata.InternalURL; ExternalURL=$oabdata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth; IISAuthenticationMethods=$iisauth}
+    $mapicontent += @{Name=$item.Name; InternalURL=$mapidata.InternalURL; ExternalURL=$mapidata.ExternalURL; InternalAuth=$intauth; ExternalAuth=$extauth; IISAuthenticationMethods=$iisauth}
     $mapiinfo = $mapicontent |ForEach-Object { new-object PSObject -Property $_} |select-Object name,internalURL,ExternalURL,InternalAuth,ExternalAuth,IISAuthenticationMethods 
     [array]$urllist += [string]$mapidata.InternalURL
     }
