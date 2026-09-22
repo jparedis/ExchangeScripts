@@ -15,7 +15,8 @@
 
       1. Exchange management shell and the correct CAS cmdlet are available, and the ASA
          credential can be read on every server at all
-      2. Every Client Access service has an ASA credential deployed
+      2. Every Client Access service has an ASA credential deployed. An organization where no
+         server has one at all is reported as an NTLM organization instead of as a failure
       3. All servers use the same ASA account (mismatch breaks Kerberos for part of the farm)
       4. All servers carry the same credential generation (a rolled password reached every server)
       5. The credential age stays below the rotation threshold
@@ -344,26 +345,32 @@ function Get-ASAReadDiagnosis {
         $verdict = 'The registry of this server cannot be read from this session. Check that the server is online, that the RemoteRegistry service runs, that the firewall allows remote registry, and that your account has rights on it.'
         if ($RegistryState.ProbeError) { $verdict += " Probe error: $($RegistryState.ProbeError)" }
         $status = 'Fail'
+        $state = 'Unknown'
     }
     elseif (-not $RegistryState.ServiceAccountsKeyPresent) {
         $verdict = 'The registry is reachable but the ServiceAccounts subtree does not exist, so no ASA credential was ever deployed on this server.'
         $status = 'Fail'
+        $state = 'NotDeployed'
     }
     elseif ($RegistryState.AccountKeyCount -eq 0 -and $RegistryState.AccountValueCount -eq 0) {
         # Exchange throws on an empty subtree instead of reporting an unset credential, so this
         # is the normal state of a server that simply never received the ASA credential.
         $verdict = 'The ServiceAccounts subtree exists but is empty, so no ASA credential is deployed on this server. Deploy it with Set-ClientAccessService -AlternateServiceAccountCredential, or copy the credential from a server that already has it with RollAlternateServiceAccountPassword.ps1.'
         $status = 'Fail'
+        $state = 'NotDeployed'
     }
     else {
         $verdict = 'The ServiceAccounts subtree exists and holds {0} subkey(s) and {1} value(s), so the credential data is present but Exchange refused the read. Check your rights on that subtree.' -f $RegistryState.AccountKeyCount, $RegistryState.AccountValueCount
         $status = 'Warning'
+        $state = 'Unknown'
     }
 
     if ($ExchangeError) { $verdict += " Exchange returned: $ExchangeError" }
 
     [pscustomobject]@{
         Status  = $status
+        # NotDeployed means the absence is established, Unknown means it could not be determined.
+        State   = $state
         Details = $verdict
     }
 }
@@ -479,6 +486,7 @@ foreach ($clientAccessService in $clientAccessServices) {
             Server       = $serverName
             UserName     = $null
             WhenAddedUtc = $null
+            State        = $diagnosis.State
         }
 
         continue
@@ -492,6 +500,7 @@ foreach ($clientAccessService in $clientAccessServices) {
             Server       = $serverName
             UserName     = $null
             WhenAddedUtc = $null
+            State        = 'NotDeployed'
         }
         continue
     }
@@ -505,6 +514,7 @@ foreach ($clientAccessService in $clientAccessServices) {
         Server       = $serverName
         UserName     = $currentCredential.UserName
         WhenAddedUtc = $currentCredential.WhenAddedUtc
+        State        = 'Deployed'
     }
 
     $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Pass' -Details ('Account {0}, {1} credential(s) present' -f $currentCredential.UserName, $credentialList.Count)
@@ -542,9 +552,27 @@ foreach ($clientAccessService in $clientAccessServices) {
 #region organization consistency
 
 $serversWithCredential = @($deployedState | Where-Object { $_.UserName })
+$serversWithoutCredential = @($deployedState | Where-Object { $_.State -eq 'NotDeployed' })
+$serversWithUnknownState = @($deployedState | Where-Object { $_.State -eq 'Unknown' })
 
-if ($serversWithCredential.Count -eq 0) {
-    $findings += New-ASAFinding -Category 'Consistency' -Target 'Organization' -Check 'ASA account identical on all servers' -Status 'Fail' -Details 'Not a single server carries an ASA credential, Kerberos authentication cannot work.'
+# No credential anywhere, and every server said so conclusively: this organization simply does
+# not use Kerberos for these namespaces. That is a valid design, so it is reported as information
+# instead of a wall of failures. An organization that only looks empty because some servers could
+# not be read keeps its failures, because absence was never established there.
+$asaNotInUse = ($serversWithCredential.Count -eq 0 -and $serversWithUnknownState.Count -eq 0 -and $serversWithoutCredential.Count -gt 0)
+
+if ($asaNotInUse) {
+    foreach ($finding in $findings) {
+        if ($finding.Category -eq 'Credential' -and $finding.Status -eq 'Fail') {
+            $finding.Status = 'Info'
+            $finding.Details += ' Reported as information because no server in this organization has an ASA credential.'
+        }
+    }
+
+    $findings += New-ASAFinding -Category 'Consistency' -Target 'Organization' -Check 'ASA in use' -Status 'Info' -Details ('No ASA credential is deployed on any of the {0} server(s), so Kerberos is not in use for these namespaces and clients authenticate with NTLM. That is a valid configuration. Deploy an ASA only if Kerberos is the goal.' -f $deployedState.Count)
+}
+elseif ($serversWithCredential.Count -eq 0) {
+    $findings += New-ASAFinding -Category 'Consistency' -Target 'Organization' -Check 'ASA account identical on all servers' -Status 'Fail' -Details ('No ASA credential was found, but the state of {0} server(s) could not be determined, so Kerberos may be configured without this session being able to see it.' -f $serversWithUnknownState.Count)
 }
 else {
     $distinctAccounts = @($serversWithCredential | ForEach-Object { ConvertTo-SamAccountName -UserName $_.UserName } | Sort-Object -Unique)
@@ -641,6 +669,9 @@ elseif ($serversWithCredential.Count -gt 0) {
 if ($SkipSPNCheck) {
     $findings += New-ASAFinding -Category 'ActiveDirectory' -Target 'Organization' -Check 'Directory validation' -Status 'Info' -Details 'Skipped on request (-SkipSPNCheck).'
 }
+elseif ($asaNotInUse) {
+    $findings += New-ASAFinding -Category 'ActiveDirectory' -Target 'Organization' -Check 'Directory validation' -Status 'Info' -Details 'Skipped because no ASA is in use in this organization.'
+}
 elseif (-not $asaSamAccountName) {
     $findings += New-ASAFinding -Category 'ActiveDirectory' -Target 'Organization' -Check 'Directory validation' -Status 'Fail' -Details 'No ASA account name is known, so the directory checks were skipped.'
 }
@@ -732,7 +763,14 @@ else {
 #region authentication methods
 
 # Without Negotiate in IISAuthenticationMethods the client never asks for a Kerberos ticket,
-# no matter how correct the ASA and the SPNs are.
+# no matter how correct the ASA and the SPNs are. In an organization without an ASA there is no
+# ticket to ask for either, so a missing Negotiate is information there rather than a failure.
+$missingNegotiateStatus = 'Fail'
+$missingNegotiateSuffix = ''
+if ($asaNotInUse) {
+    $missingNegotiateStatus = 'Info'
+    $missingNegotiateSuffix = ' Not a failure here because no ASA is in use.'
+}
 try {
     foreach ($outlookAnywhere in @(Get-OutlookAnywhere -ErrorAction Stop)) {
         $target = [string]$outlookAnywhere.Server
@@ -744,7 +782,7 @@ try {
             $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'Outlook Anywhere offers Negotiate' -Status 'Pass' -Details ('IISAuthenticationMethods: {0}' -f ($authenticationMethods -join ', '))
         }
         else {
-            $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'Outlook Anywhere offers Negotiate' -Status 'Fail' -Details ('IISAuthenticationMethods: {0}' -f ($authenticationMethods -join ', '))
+            $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'Outlook Anywhere offers Negotiate' -Status $missingNegotiateStatus -Details ('IISAuthenticationMethods: {0}.{1}' -f ($authenticationMethods -join ', '), $missingNegotiateSuffix)
         }
     }
 }
@@ -764,7 +802,7 @@ if (Get-Command -Name 'Get-MapiVirtualDirectory' -ErrorAction SilentlyContinue) 
                 $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'MAPI virtual directory offers Negotiate' -Status 'Pass' -Details ('IISAuthenticationMethods: {0}' -f ($authenticationMethods -join ', '))
             }
             else {
-                $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'MAPI virtual directory offers Negotiate' -Status 'Fail' -Details ('IISAuthenticationMethods: {0}' -f ($authenticationMethods -join ', '))
+                $findings += New-ASAFinding -Category 'Authentication' -Target $target -Check 'MAPI virtual directory offers Negotiate' -Status $missingNegotiateStatus -Details ('IISAuthenticationMethods: {0}.{1}' -f ($authenticationMethods -join ', '), $missingNegotiateSuffix)
             }
         }
     }
@@ -788,7 +826,10 @@ $passCount = @($findings | Where-Object { $_.Status -eq 'Pass' }).Count
 Write-Host ''
 Write-Host ('Result: {0} pass, {1} warning, {2} fail' -f $passCount, $warningCount, $failCount) -ForegroundColor White
 
-if ($failCount -gt 0) {
+if ($asaNotInUse) {
+    Write-Host 'No ASA is deployed anywhere in this organization, so Kerberos is not in use and clients authenticate with NTLM. Nothing to validate.' -ForegroundColor Cyan
+}
+elseif ($failCount -gt 0) {
     Write-Host 'The ASA configuration is not valid, clients will fall back to NTLM or fail to authenticate.' -ForegroundColor Red
 }
 elseif ($warningCount -gt 0) {
