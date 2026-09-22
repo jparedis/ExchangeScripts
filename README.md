@@ -57,6 +57,27 @@ Requirements: Exchange Management Shell, view only Exchange permissions, directo
 the SPN checks. Tested against Exchange Server 2016 and 2019, with a `Get-ClientAccessServer`
 fallback for Exchange 2013.
 
+#### Troubleshooting
+
+The ASA credential lives in the registry of every server, under
+`HKLM\SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts`, and not in
+Active Directory. Reading it therefore reaches out to each server in turn. When Exchange answers
+with
+
+```
+Failed to read Alternate Service Account configuration data from the registry subtree
+HLKM\SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts.
+```
+
+then one specific server could not be read. The script reports that server as a single finding and
+keeps validating the rest, and it probes the registry itself to tell you which of these it is:
+
+| Situation | What the script reports |
+| --- | --- |
+| Server offline, RemoteRegistry stopped, firewall blocking, or no rights | Fail, with the probe error |
+| Registry reachable but the subtree is missing | Fail, no ASA credential was ever deployed there |
+| Registry and subtree both present | Warning, rights on that subtree rather than a missing credential |
+
 ### Get-ExUrlInfo.ps1
 
 Reads the virtual directory configuration of the active Exchange organization and builds an HTML
