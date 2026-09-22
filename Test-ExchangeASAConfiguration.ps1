@@ -13,7 +13,8 @@
 
     This script is read only. It collects the current state and validates it:
 
-      1. Exchange management shell and the correct CAS cmdlet are available
+      1. Exchange management shell and the correct CAS cmdlet are available, and the ASA
+         credential can be read on every server at all
       2. Every Client Access service has an ASA credential deployed
       3. All servers use the same ASA account (mismatch breaks Kerberos for part of the farm)
       4. All servers carry the same credential generation (a rolled password reached every server)
@@ -73,9 +74,16 @@
 .NOTES
     Author: Jente Paredis - jente@jentech.be
 
+    The ASA credential is stored in the registry of every server, not in Active Directory, so
+    reading it reaches out to each server in turn. A server that is offline, that has the
+    RemoteRegistry service stopped, or on which you have no rights, is reported as a single
+    finding while the rest of the organization is still validated.
+
     Requirements:
     - Run inside the Exchange Management Shell, or in a session with the Exchange cmdlets
       imported through implicit remoting
+    - Rights to read the registry of every Exchange server, otherwise those servers come back
+      as a readable finding instead of a credential state
     - View only Exchange permissions are sufficient, the script never writes
     - Directory read access for the SPN checks, otherwise use -SkipSPNCheck
     - Windows PowerShell 5.1
@@ -282,6 +290,44 @@ function ConvertTo-HostName {
     return $candidate
 }
 
+# The ASA credential itself is not stored in Active Directory but in the registry of every
+# server, under MSExchangeServiceHost\ServiceAccounts. When Exchange cannot read that subtree it
+# returns one single error, without telling you whether the server is unreachable or whether no
+# credential was ever deployed. This read only probe answers that question.
+function Test-ASARegistryState {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $state = [pscustomobject]@{
+        RegistryReachable         = $false
+        ServiceAccountsKeyPresent = $false
+        AccountKeyCount           = 0
+        ProbeError                = $null
+    }
+
+    $baseKey = $null
+    $serviceAccountsKey = $null
+
+    try {
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $ComputerName)
+        $state.RegistryReachable = $true
+
+        $serviceAccountsKey = $baseKey.OpenSubKey('SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts')
+        if ($serviceAccountsKey) {
+            $state.ServiceAccountsKeyPresent = $true
+            $state.AccountKeyCount = @($serviceAccountsKey.GetSubKeyNames()).Count
+        }
+    }
+    catch {
+        $state.ProbeError = $_.Exception.Message
+    }
+    finally {
+        if ($serviceAccountsKey) { $serviceAccountsKey.Close() }
+        if ($baseKey) { $baseKey.Close() }
+    }
+
+    return $state
+}
+
 # Limits a per server check to the servers passed through -Server, matching on the short name.
 function Test-ServerInScope {
     param(
@@ -337,19 +383,22 @@ $findings += New-ASAFinding -Category 'Prerequisites' -Target 'Session' -Check '
 
 #region collect
 
+# The server list comes from Active Directory only. The ASA credential is read per server further
+# down, because that read touches the registry of every single server and one unreachable server
+# would otherwise hide the state of the whole organization.
 $clientAccessServices = @()
 try {
     if ($Server) {
         foreach ($serverName in $Server) {
-            $clientAccessServices += & $clientAccessCmdlet -Identity $serverName -IncludeAlternateServiceAccountCredentialStatus -ErrorAction Stop
+            $clientAccessServices += & $clientAccessCmdlet -Identity $serverName -ErrorAction Stop
         }
     }
     else {
-        $clientAccessServices = @(& $clientAccessCmdlet -IncludeAlternateServiceAccountCredentialStatus -ErrorAction Stop)
+        $clientAccessServices = @(& $clientAccessCmdlet -ErrorAction Stop)
     }
 }
 catch {
-    throw "Unable to read the Client Access configuration: $($_.Exception.Message)"
+    throw "Unable to enumerate the Client Access services: $($_.Exception.Message)"
 }
 
 if (-not $clientAccessServices -or $clientAccessServices.Count -eq 0) {
@@ -367,7 +416,48 @@ $deployedState = @()
 
 foreach ($clientAccessService in $clientAccessServices) {
     $serverName = [string]$clientAccessService.Name
-    $credentialList = @(ConvertTo-ASACredentialList -Configuration $clientAccessService.AlternateServiceAccountConfiguration)
+
+    $asaConfiguration = $null
+    $credentialReadError = $null
+
+    try {
+        $detailedService = & $clientAccessCmdlet -Identity $serverName -IncludeAlternateServiceAccountCredentialStatus -ErrorAction Stop
+        $asaConfiguration = $detailedService.AlternateServiceAccountConfiguration
+    }
+    catch {
+        $credentialReadError = $_.Exception.Message
+    }
+
+    # Exchange failed the registry read, so work out why instead of reporting one opaque error.
+    if ($credentialReadError) {
+        $registryState = Test-ASARegistryState -ComputerName $serverName
+
+        if (-not $registryState.RegistryReachable) {
+            $diagnosis = 'The registry of this server cannot be read from this session. Check that the server is online, that the RemoteRegistry service runs, that the firewall allows remote registry, and that your account has rights on it.'
+            if ($registryState.ProbeError) { $diagnosis += " Probe error: $($registryState.ProbeError)" }
+            $status = 'Fail'
+        }
+        elseif (-not $registryState.ServiceAccountsKeyPresent) {
+            $diagnosis = 'The registry is reachable but the ServiceAccounts subtree does not exist, so no ASA credential was ever deployed on this server.'
+            $status = 'Fail'
+        }
+        else {
+            $diagnosis = 'The registry is reachable and the ServiceAccounts subtree exists with {0} account key(s), so this is a rights issue on that subtree rather than a missing credential.' -f $registryState.AccountKeyCount
+            $status = 'Warning'
+        }
+
+        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential readable' -Status $status -Details ('{0} Exchange returned: {1}' -f $diagnosis, $credentialReadError)
+
+        $deployedState += [pscustomobject]@{
+            Server       = $serverName
+            UserName     = $null
+            WhenAddedUtc = $null
+        }
+
+        continue
+    }
+
+    $credentialList = @(ConvertTo-ASACredentialList -Configuration $asaConfiguration)
 
     if ($credentialList.Count -eq 0) {
         $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Fail' -Details 'No alternate service account credential is configured on this server.'
