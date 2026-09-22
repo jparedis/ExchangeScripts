@@ -76,7 +76,8 @@ keeps validating the rest, and it probes the registry itself to tell you which o
 | --- | --- |
 | Server offline, RemoteRegistry stopped, firewall blocking, or no rights | Fail, with the probe error |
 | Registry reachable but the subtree is missing | Fail, no ASA credential was ever deployed there |
-| Registry and subtree both present | Warning, rights on that subtree rather than a missing credential |
+| Subtree present but empty | Fail, no ASA credential is deployed on this server. Exchange throws on an empty subtree instead of reporting an unset credential, so this is the normal state of a server that never received the credential |
+| Subtree present and holding subkeys or values | Warning, the data is there so it points at rights on that subtree |
 
 ### Get-ExUrlInfo.ps1
 
