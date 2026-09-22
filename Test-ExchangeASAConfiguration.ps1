@@ -301,6 +301,7 @@ function Test-ASARegistryState {
         RegistryReachable         = $false
         ServiceAccountsKeyPresent = $false
         AccountKeyCount           = 0
+        AccountValueCount         = 0
         ProbeError                = $null
     }
 
@@ -314,7 +315,10 @@ function Test-ASARegistryState {
         $serviceAccountsKey = $baseKey.OpenSubKey('SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts')
         if ($serviceAccountsKey) {
             $state.ServiceAccountsKeyPresent = $true
+            # Count subkeys and values both: an empty subtree means no credential was deployed,
+            # whatever shape Exchange used to store it.
             $state.AccountKeyCount = @($serviceAccountsKey.GetSubKeyNames()).Count
+            $state.AccountValueCount = @($serviceAccountsKey.GetValueNames() | Where-Object { -not [string]::IsNullOrEmpty($_) }).Count
         }
     }
     catch {
@@ -326,6 +330,42 @@ function Test-ASARegistryState {
     }
 
     return $state
+}
+
+# Turns a probe result plus the Exchange error into one readable verdict. Kept separate from the
+# probe so the reasoning can be tested without a registry.
+function Get-ASAReadDiagnosis {
+    param(
+        [Parameter(Mandatory)]$RegistryState,
+        [string]$ExchangeError
+    )
+
+    if (-not $RegistryState.RegistryReachable) {
+        $verdict = 'The registry of this server cannot be read from this session. Check that the server is online, that the RemoteRegistry service runs, that the firewall allows remote registry, and that your account has rights on it.'
+        if ($RegistryState.ProbeError) { $verdict += " Probe error: $($RegistryState.ProbeError)" }
+        $status = 'Fail'
+    }
+    elseif (-not $RegistryState.ServiceAccountsKeyPresent) {
+        $verdict = 'The registry is reachable but the ServiceAccounts subtree does not exist, so no ASA credential was ever deployed on this server.'
+        $status = 'Fail'
+    }
+    elseif ($RegistryState.AccountKeyCount -eq 0 -and $RegistryState.AccountValueCount -eq 0) {
+        # Exchange throws on an empty subtree instead of reporting an unset credential, so this
+        # is the normal state of a server that simply never received the ASA credential.
+        $verdict = 'The ServiceAccounts subtree exists but is empty, so no ASA credential is deployed on this server. Deploy it with Set-ClientAccessService -AlternateServiceAccountCredential, or copy the credential from a server that already has it with RollAlternateServiceAccountPassword.ps1.'
+        $status = 'Fail'
+    }
+    else {
+        $verdict = 'The ServiceAccounts subtree exists and holds {0} subkey(s) and {1} value(s), so the credential data is present but Exchange refused the read. Check your rights on that subtree.' -f $RegistryState.AccountKeyCount, $RegistryState.AccountValueCount
+        $status = 'Warning'
+    }
+
+    if ($ExchangeError) { $verdict += " Exchange returned: $ExchangeError" }
+
+    [pscustomobject]@{
+        Status  = $status
+        Details = $verdict
+    }
 }
 
 # Limits a per server check to the servers passed through -Server, matching on the short name.
@@ -431,22 +471,9 @@ foreach ($clientAccessService in $clientAccessServices) {
     # Exchange failed the registry read, so work out why instead of reporting one opaque error.
     if ($credentialReadError) {
         $registryState = Test-ASARegistryState -ComputerName $serverName
+        $diagnosis = Get-ASAReadDiagnosis -RegistryState $registryState -ExchangeError $credentialReadError
 
-        if (-not $registryState.RegistryReachable) {
-            $diagnosis = 'The registry of this server cannot be read from this session. Check that the server is online, that the RemoteRegistry service runs, that the firewall allows remote registry, and that your account has rights on it.'
-            if ($registryState.ProbeError) { $diagnosis += " Probe error: $($registryState.ProbeError)" }
-            $status = 'Fail'
-        }
-        elseif (-not $registryState.ServiceAccountsKeyPresent) {
-            $diagnosis = 'The registry is reachable but the ServiceAccounts subtree does not exist, so no ASA credential was ever deployed on this server.'
-            $status = 'Fail'
-        }
-        else {
-            $diagnosis = 'The registry is reachable and the ServiceAccounts subtree exists with {0} account key(s), so this is a rights issue on that subtree rather than a missing credential.' -f $registryState.AccountKeyCount
-            $status = 'Warning'
-        }
-
-        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential readable' -Status $status -Details ('{0} Exchange returned: {1}' -f $diagnosis, $credentialReadError)
+        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential readable' -Status $diagnosis.Status -Details $diagnosis.Details
 
         $deployedState += [pscustomobject]@{
             Server       = $serverName
