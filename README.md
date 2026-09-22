@@ -40,6 +40,13 @@ and the findings stay failures.
 Active Directory is queried through `System.DirectoryServices`, so RSAT and the ActiveDirectory
 module are not required. SPN duplicates are searched forest wide through the global catalog.
 
+The ASA credential itself lives in the registry of every server, so the script reads that subtree
+on each of them. That read goes local for the server running the session, then over WinRM, and
+only as a last resort through the RemoteRegistry service. `-RegistryAccess Remoting` keeps it off
+RemoteRegistry entirely, `RemoteRegistry` forces the old path and `None` skips the read. Every
+server reports the same check with the same evidence, including how its registry was read, so two
+servers in the same state never come back worded differently.
+
 ```powershell
 # validate the whole organization
 .\Test-ExchangeASAConfiguration.ps1
@@ -49,6 +56,9 @@ module are not required. SPN duplicates are searched forest wide through the glo
 
 # two servers, stricter rotation threshold, no directory lookups
 .\Test-ExchangeASAConfiguration.ps1 -Server EX01,EX02 -PasswordMaximumAgeDays 30 -SkipSPNCheck
+
+# never touch the RemoteRegistry service, read over WinRM only
+.\Test-ExchangeASAConfiguration.ps1 -RegistryAccess Remoting
 ```
 
 The findings are also returned as objects (`Category`, `Target`, `Check`, `Status`, `Details`), so
@@ -76,7 +86,7 @@ HLKM\SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts.
 ```
 
 then one specific server could not be read. The script reports that server as a single finding and
-keeps validating the rest, and it probes the registry itself to tell you which of these it is:
+keeps validating the rest, and its own registry read tells you which of these it is:
 
 | Situation | What the script reports |
 | --- | --- |

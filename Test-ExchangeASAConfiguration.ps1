@@ -47,6 +47,13 @@
     Extra namespaces that must have an http/ SPN on the ASA account, for example a legacy or
     migration namespace that is not returned by the virtual directory cmdlets.
 
+.PARAMETER RegistryAccess
+    How the ASA registry subtree is read on each server. Auto is the default and tries the local
+    registry for the server running this session, then PowerShell remoting over WinRM, and only
+    then the RemoteRegistry service. Remoting never falls back to RemoteRegistry, which is the
+    setting to use when that service is disabled by policy. RemoteRegistry forces the old path,
+    None skips the registry read entirely and leaves an Exchange error unexplained.
+
 .PARAMETER SkipSPNCheck
     Skips every Active Directory lookup. Use this when the account running the script has no
     read access to the directory.
@@ -76,7 +83,8 @@
     Author: Jente Paredis - jente@jentech.be
 
     The ASA credential is stored in the registry of every server, not in Active Directory, so
-    reading it reaches out to each server in turn. A server that is offline, that has the
+    reading it reaches out to each server in turn. That read goes over WinRM by default, the same
+    channel Exchange management already uses, so the RemoteRegistry service is not required. A server that is offline, that has the
     RemoteRegistry service stopped, or on which you have no rights, is reported as a single
     finding while the rest of the organization is still validated.
 
@@ -107,6 +115,10 @@ param(
 
     [Parameter()]
     [string[]]$AdditionalNamespace,
+
+    [Parameter()]
+    [ValidateSet('Auto', 'Remoting', 'RemoteRegistry', 'None')]
+    [string]$RegistryAccess = 'Auto',
 
     [Parameter()]
     [switch]$SkipSPNCheck,
@@ -295,42 +307,130 @@ function ConvertTo-HostName {
 # server, under MSExchangeServiceHost\ServiceAccounts. When Exchange cannot read that subtree it
 # returns one single error, without telling you whether the server is unreachable or whether no
 # credential was ever deployed. This read only probe answers that question.
-function Test-ASARegistryState {
-    param([Parameter(Mandatory)][string]$ComputerName)
+function Get-ASARegistryState {
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [ValidateSet('Auto', 'Remoting', 'RemoteRegistry', 'None')][string]$Method = 'Auto'
+    )
 
     $state = [pscustomobject]@{
         RegistryReachable         = $false
         ServiceAccountsKeyPresent = $false
         AccountKeyCount           = 0
         AccountValueCount         = 0
+        AccessMethod              = 'None'
         ProbeError                = $null
     }
 
-    $baseKey = $null
-    $serviceAccountsKey = $null
+    if ($Method -eq 'None') {
+        $state.AccessMethod = 'Skipped'
+        return $state
+    }
 
-    try {
-        $baseKey = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $ComputerName)
-        $state.RegistryReachable = $true
+    # One reader for every transport, so a local read and a remote read cannot drift apart.
+    $registryReader = {
+        $registryPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts'
+        $registryKey = Get-Item -LiteralPath $registryPath -ErrorAction SilentlyContinue
 
-        $serviceAccountsKey = $baseKey.OpenSubKey('SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts')
-        if ($serviceAccountsKey) {
-            $state.ServiceAccountsKeyPresent = $true
-            # Count subkeys and values both: an empty subtree means no credential was deployed,
-            # whatever shape Exchange used to store it.
-            $state.AccountKeyCount = @($serviceAccountsKey.GetSubKeyNames()).Count
-            $state.AccountValueCount = @($serviceAccountsKey.GetValueNames() | Where-Object { -not [string]::IsNullOrEmpty($_) }).Count
+        if (-not $registryKey) {
+            [pscustomobject]@{ KeyPresent = $false; SubKeyCount = 0; ValueCount = 0 }
+        }
+        else {
+            $subKeyNames = @($registryKey.GetSubKeyNames())
+            $valueNames = @($registryKey.GetValueNames() | Where-Object { -not [string]::IsNullOrEmpty($_) })
+            [pscustomobject]@{ KeyPresent = $true; SubKeyCount = $subKeyNames.Count; ValueCount = $valueNames.Count }
         }
     }
-    catch {
-        $state.ProbeError = $_.Exception.Message
-    }
-    finally {
-        if ($serviceAccountsKey) { $serviceAccountsKey.Close() }
-        if ($baseKey) { $baseKey.Close() }
+
+    $isLocalServer = ($ComputerName.Split('.')[0] -eq $env:COMPUTERNAME)
+
+    # The order matters: no network for the local server, then WinRM which Exchange management
+    # already relies on, and only then the RemoteRegistry service.
+    $transportList = @()
+    switch ($Method) {
+        'Auto' {
+            if ($isLocalServer) { $transportList = @('Local', 'Remoting', 'RemoteRegistry') }
+            else { $transportList = @('Remoting', 'RemoteRegistry') }
+        }
+        'Remoting' {
+            if ($isLocalServer) { $transportList = @('Local') } else { $transportList = @('Remoting') }
+        }
+        'RemoteRegistry' { $transportList = @('RemoteRegistry') }
     }
 
+    $attemptErrors = @()
+
+    foreach ($transport in $transportList) {
+        try {
+            $reading = $null
+
+            switch ($transport) {
+                'Local' {
+                    $reading = & $registryReader
+                }
+                'Remoting' {
+                    $reading = Invoke-Command -ComputerName $ComputerName -ScriptBlock $registryReader -ErrorAction Stop
+                }
+                'RemoteRegistry' {
+                    $baseKey = $null
+                    $serviceAccountsKey = $null
+
+                    try {
+                        $baseKey = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $ComputerName)
+                        $serviceAccountsKey = $baseKey.OpenSubKey('SYSTEM\CurrentControlSet\Services\MSExchangeServiceHost\ServiceAccounts')
+
+                        if (-not $serviceAccountsKey) {
+                            $reading = [pscustomobject]@{ KeyPresent = $false; SubKeyCount = 0; ValueCount = 0 }
+                        }
+                        else {
+                            $subKeyNames = @($serviceAccountsKey.GetSubKeyNames())
+                            $valueNames = @($serviceAccountsKey.GetValueNames() | Where-Object { -not [string]::IsNullOrEmpty($_) })
+                            $reading = [pscustomobject]@{ KeyPresent = $true; SubKeyCount = $subKeyNames.Count; ValueCount = $valueNames.Count }
+                        }
+                    }
+                    finally {
+                        if ($serviceAccountsKey) { $serviceAccountsKey.Close() }
+                        if ($baseKey) { $baseKey.Close() }
+                    }
+                }
+            }
+
+            if ($reading) {
+                $state.RegistryReachable = $true
+                $state.ServiceAccountsKeyPresent = [bool]$reading.KeyPresent
+                $state.AccountKeyCount = [int]$reading.SubKeyCount
+                $state.AccountValueCount = [int]$reading.ValueCount
+                $state.AccessMethod = $transport
+                return $state
+            }
+        }
+        catch {
+            $attemptErrors += ('{0}: {1}' -f $transport, $_.Exception.Message)
+        }
+    }
+
+    $state.ProbeError = $attemptErrors -join ' | '
     return $state
+}
+
+# One line that says how the registry was read and what was in it, so every server in the report
+# carries the same evidence in the same wording.
+function Format-ASARegistrySummary {
+    param([Parameter(Mandatory)]$RegistryState)
+
+    if ($RegistryState.AccessMethod -eq 'Skipped') {
+        return 'Registry not checked (-RegistryAccess None).'
+    }
+
+    if (-not $RegistryState.RegistryReachable) {
+        return ('Registry not readable. {0}' -f $RegistryState.ProbeError)
+    }
+
+    if (-not $RegistryState.ServiceAccountsKeyPresent) {
+        return ('Registry read through {0}: the ServiceAccounts subtree does not exist.' -f $RegistryState.AccessMethod)
+    }
+
+    return ('Registry read through {0}: ServiceAccounts subtree present with {1} subkey(s) and {2} value(s).' -f $RegistryState.AccessMethod, $RegistryState.AccountKeyCount, $RegistryState.AccountValueCount)
 }
 
 # Turns a probe result plus the Exchange error into one readable verdict. Kept separate from the
@@ -365,6 +465,7 @@ function Get-ASAReadDiagnosis {
         $state = 'Unknown'
     }
 
+    if ($RegistryState.RegistryReachable) { $verdict += " Registry read through $($RegistryState.AccessMethod)." }
     if ($ExchangeError) { $verdict += " Exchange returned: $ExchangeError" }
 
     [pscustomobject]@{
@@ -464,6 +565,11 @@ $deployedState = @()
 foreach ($clientAccessService in $clientAccessServices) {
     $serverName = [string]$clientAccessService.Name
 
+    # The registry is probed on every server, not only after a failure, so every server in the
+    # report carries the same evidence and the same check name.
+    $registryState = Get-ASARegistryState -ComputerName $serverName -Method $RegistryAccess
+    $registrySummary = Format-ASARegistrySummary -RegistryState $registryState
+
     $asaConfiguration = $null
     $credentialReadError = $null
 
@@ -475,12 +581,11 @@ foreach ($clientAccessService in $clientAccessServices) {
         $credentialReadError = $_.Exception.Message
     }
 
-    # Exchange failed the registry read, so work out why instead of reporting one opaque error.
+    # Exchange failed its own registry read, so work out why instead of reporting one opaque error.
     if ($credentialReadError) {
-        $registryState = Test-ASARegistryState -ComputerName $serverName
         $diagnosis = Get-ASAReadDiagnosis -RegistryState $registryState -ExchangeError $credentialReadError
 
-        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential readable' -Status $diagnosis.Status -Details $diagnosis.Details
+        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status $diagnosis.Status -Details $diagnosis.Details
 
         $deployedState += [pscustomobject]@{
             Server       = $serverName
@@ -495,7 +600,7 @@ foreach ($clientAccessService in $clientAccessServices) {
     $credentialList = @(ConvertTo-ASACredentialList -Configuration $asaConfiguration)
 
     if ($credentialList.Count -eq 0) {
-        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Fail' -Details 'No alternate service account credential is configured on this server.'
+        $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Fail' -Details ('No alternate service account credential is configured on this server. {0}' -f $registrySummary)
         $deployedState += [pscustomobject]@{
             Server       = $serverName
             UserName     = $null
@@ -517,7 +622,7 @@ foreach ($clientAccessService in $clientAccessServices) {
         State        = 'Deployed'
     }
 
-    $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Pass' -Details ('Account {0}, {1} credential(s) present' -f $currentCredential.UserName, $credentialList.Count)
+    $findings += New-ASAFinding -Category 'Credential' -Target $serverName -Check 'ASA credential deployed' -Status 'Pass' -Details ('Account {0}, {1} credential(s) present. {2}' -f $currentCredential.UserName, $credentialList.Count, $registrySummary)
 
     if ($currentCredential.WhenAddedUtc) {
         $credentialAgeDays = [int]((Get-Date).ToUniversalTime() - $currentCredential.WhenAddedUtc).TotalDays
