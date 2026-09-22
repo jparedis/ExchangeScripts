@@ -31,6 +31,12 @@ authentication. The script checks the whole chain:
 Namespaces are collected from Outlook Anywhere, the MAPI, EWS and OAB virtual directories and the
 Autodiscover service URI, so the SPN check follows the configuration instead of a hardcoded list.
 
+An organization where no server has an ASA credential at all is not treated as broken. Kerberos is
+simply not in use there and clients authenticate with NTLM, which is a valid configuration, so the
+report says so in one line instead of failing every check. That only applies when every server
+answered conclusively: if the state of one server could not be read, absence was never established
+and the findings stay failures.
+
 Active Directory is queried through `System.DirectoryServices`, so RSAT and the ActiveDirectory
 module are not required. SPN duplicates are searched forest wide through the global catalog.
 
