@@ -100,6 +100,73 @@ keeps validating the rest, and its own registry read tells you which of these it
 Reads the virtual directory configuration of the active Exchange organization and builds an HTML
 report. Dot source the file first, then call `Get-ExUrlInfo`.
 
+### Install-ExchangeSEPrerequisites.ps1
+
+Downloads and installs the Windows prerequisites for the Exchange Server Subscription Edition Mailbox
+role on Windows Server 2025: the Windows features from the Microsoft prerequisites page, .NET
+Framework 4.8.1, the Visual C++ 2012 and 2013 x64 redistributables, UCMA 4.0, IIS URL Rewrite 2.1
+and the Remote Registry service on Automatic. This one runs before Exchange exists, so it needs a
+plain elevated PowerShell session, not the Exchange Management Shell.
+
+Three modes: `Download` on a machine with internet access, `Install` on the server from the copied
+folder, or `DownloadAndInstall` on the same machine (the default). Every item ends as Downloaded,
+AlreadyDownloaded, Installed, AlreadyInstalled, Set, Failed or Skipped, everything goes to a log file
+in the download folder, and the script ends with a read only check of every requirement and a
+verdict: `SERVER READY FOR EXCHANGE SETUP` (exit 0), `SERVER READY FOR EXCHANGE SETUP AFTER REBOOT`
+(exit 3010) or `SERVER NOT READY FOR EXCHANGE SETUP` with the missing items listed (exit 1).
+
+```powershell
+# download on a machine with internet, copy the folder to the server afterwards
+.\Install-ExchangeSEPrerequisites.ps1 -Mode Download -Path D:\ExchangePrereqs
+
+# install from that folder on the server and reboot when done
+.\Install-ExchangeSEPrerequisites.ps1 -Mode Install -Path D:\ExchangePrereqs -Restart
+
+# readiness check only, nothing is changed
+.\Install-ExchangeSEPrerequisites.ps1 -Mode Install -WhatIf
+```
+
+Follows the SE RTM prerequisites. Exchange SE CU1 drops UCMA and moves to the Visual C++ 2022
+runtime, so check the Microsoft page again once CU1 is released.
+
+### Copy-ExchangeServerConfig.ps1
+
+Copies the client access and transport configuration of an existing Exchange server to a newly
+installed one. Written for the Exchange SE migration where the existing server is upgraded in place
+and new servers join the organization for a new DAG. Reads the source, compares with the target and
+applies only what differs, so a second run reports "in sync" and doubles as a drift check. Every
+decision goes to a CSV in the output folder next to a JSON snapshot of both servers. Run with
+`-WhatIf` first. Full documentation in [Copy-ExchangeServerConfig.md](Copy-ExchangeServerConfig.md).
+
+```powershell
+.\Copy-ExchangeServerConfig.ps1 -SourceServer EX01 -TargetServer EX02 -WhatIf
+```
+
+### Export-ExchangeServerConfigScript.ps1
+
+The read only alternative to the script above. Reads the same configuration from the source server
+and writes a plain PowerShell script of filled in Set commands, one per object, without functions or
+logic. Review or trim the generated file and run it in the Exchange Management Shell against the new
+server. Every command carries `-WhatIf:$WhatIf`, so one variable at the top turns the whole file into
+a dry run. See [examples/Set-ExchangeServerConfig_from_EX01_example.ps1](examples/Set-ExchangeServerConfig_from_EX01_example.ps1)
+for what the output looks like.
+
+```powershell
+.\Export-ExchangeServerConfigScript.ps1 -SourceServer EX01 -OutputPath C:\Temp
+```
+
+### Compare-ExchangeServerConfig.ps1
+
+Read only comparison of two Exchange servers over exactly the parameters the two scripts above can
+set: certificates, virtual directories, Outlook Anywhere, transport, POP and IMAP, receive and send
+connectors, config files, IIS bindings and more. Use it to prove the new server matches the source
+and later as a drift check between DAG members. Writes `compare.csv` and `compare.html` and exits
+with the number of differences, so it can gate a change window.
+
+```powershell
+.\Compare-ExchangeServerConfig.ps1 -SourceServer EX01 -TargetServer EX02
+```
+
 ## Author
 
 Jente Paredis, jentech consulting BV. jente@jentech.be
