@@ -152,7 +152,7 @@ a dry run. See [examples/Set-ExchangeServerConfig_from_EX01_example.ps1](example
 for what the output looks like.
 
 ```powershell
-.\Export-ExchangeServerConfigScript.ps1 -SourceServer EX01 -OutputPath C:\Temp
+.\Export-ExchangeServerConfigScript.ps1 -SourceServer EX01 -TargetServer EX02 -OutputPath C:\Temp\Set-EX02.ps1
 ```
 
 ### Compare-ExchangeServerConfig.ps1
