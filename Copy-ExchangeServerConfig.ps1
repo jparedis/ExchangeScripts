@@ -951,8 +951,9 @@ function Sync-ReceiveConnectorPermission {
         permission group and is lost when a connector is rebuilt by hand.
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
-    param([string] $SourceIdentity, [string] $TargetIdentity, [bool] $TargetExists)
+    param([string] $SourceIdentity, [string] $TargetIdentity, [string] $TargetLabel, [bool] $TargetExists)
     $areaName = 'ReceiveConnectors'
+    if (-not $TargetLabel) { $TargetLabel = $TargetIdentity }
 
     $sourceAces = @(Get-ADPermission -Identity $SourceIdentity -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })
     if ($sourceAces.Count -eq 0) { return }
@@ -991,17 +992,17 @@ function Sync-ReceiveConnectorPermission {
         if ($null -ne $inheritance -and "$inheritance" -ne 'None') { $arguments['InheritanceType'] = [string]$inheritance }
 
         $description = '{0}: {1}{2}' -f $user, (($extendedRights + $accessRights | Where-Object { $_ }) -join ','), $(if ([bool]$ace.Deny) { ' (Deny)' } else { '' })
-        if ($PSCmdlet.ShouldProcess($TargetIdentity, ('Add-ADPermission {0}' -f $description))) {
+        if ($PSCmdlet.ShouldProcess($TargetLabel, ('Add-ADPermission {0}' -f $description))) {
             try {
                 Add-ADPermission @arguments | Out-Null
-                Add-Change -Area $areaName -Identity $TargetIdentity -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status Applied
+                Add-Change -Area $areaName -Identity $TargetLabel -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status Applied
             }
             catch {
-                Add-Change -Area $areaName -Identity $TargetIdentity -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status Failed -Message $_.Exception.Message
+                Add-Change -Area $areaName -Identity $TargetLabel -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status Failed -Message $_.Exception.Message
             }
         }
         else {
-            Add-Change -Area $areaName -Identity $TargetIdentity -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status (Get-PendingStatus)
+            Add-Change -Area $areaName -Identity $TargetLabel -Property 'ADPermission' -SourceValue $description -TargetValue 'missing' -Status (Get-PendingStatus)
         }
     }
 }
@@ -1051,7 +1052,10 @@ function Invoke-AreaReceiveConnectors {
             -TargetIdentity $targetIdentity -ExcludeProperties @('TransportRole', 'Usage', 'Custom', 'Internal', 'Internet', 'Client', 'Partner') `
             -BindingProperties @('Bindings') -RestartHint 'Restart-Service MSExchangeTransport, MSExchangeFrontEndTransport'
 
-        Sync-ReceiveConnectorPermission -SourceIdentity ([string]$connector.Identity) -TargetIdentity $targetIdentity -TargetExists ($null -ne $targetConnector)
+        # Distinguished names on purpose: Get-ADPermission and Add-ADPermission do not resolve the Server\Name form
+        # reliably. A connector that only exists in the WhatIf log keeps the Server\Name text for the report.
+        $targetPermissionIdentity = if ($null -ne $targetConnector) { [string]$targetConnector.DistinguishedName } else { $targetIdentity }
+        Sync-ReceiveConnectorPermission -SourceIdentity ([string]$connector.DistinguishedName) -TargetIdentity $targetPermissionIdentity -TargetLabel $targetIdentity -TargetExists ($null -ne $targetConnector)
     }
 
     # Connectors that only exist on the target are not touched, the operator decides.

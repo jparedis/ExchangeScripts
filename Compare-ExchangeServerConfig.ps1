@@ -548,9 +548,9 @@ function Invoke-AreaReceiveConnectors {
 
         try {
             $sourceAces = @{}
-            foreach ($ace in @(Get-ADPermission -Identity ([string]$connector.Identity) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) { $sourceAces[(Get-AceKey -Ace $ace)] = Get-AceDescription -Ace $ace }
+            foreach ($ace in @(Get-ADPermission -Identity ([string]$connector.DistinguishedName) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) { $sourceAces[(Get-AceKey -Ace $ace)] = Get-AceDescription -Ace $ace }
             $targetAces = @{}
-            foreach ($ace in @(Get-ADPermission -Identity ([string]$counterpart.Identity) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) { $targetAces[(Get-AceKey -Ace $ace)] = Get-AceDescription -Ace $ace }
+            foreach ($ace in @(Get-ADPermission -Identity ([string]$counterpart.DistinguishedName) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) { $targetAces[(Get-AceKey -Ace $ace)] = Get-AceDescription -Ace $ace }
             foreach ($key in $sourceAces.Keys) {
                 $status = if ($targetAces.ContainsKey($key)) { 'Equal' } else { 'SourceOnly' }
                 Add-Result -Area $areaName -Object $label -Property 'ADPermission' -SourceValue $sourceAces[$key] -TargetValue $(if ($status -eq 'Equal') { $sourceAces[$key] } else { '' }) -Status $status
