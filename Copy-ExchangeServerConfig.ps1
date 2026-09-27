@@ -1108,14 +1108,36 @@ function Invoke-AreaSendConnectors {
 # Area: TransportAgents, Hybrid (report only)
 # ---------------------------------------------------------------------------
 
+function Get-TransportAgentFromConfig {
+    # Get-TransportAgent has no Server parameter and only reads the server the shell is connected to, so the agent
+    # list is read from agents.config (Hub) or fetagents.config (FrontEnd) over the admin share instead. The file
+    # lists the agents in priority order with the same values Get-TransportAgent shows.
+    param($ExchangeServer, [string] $TransportService)
+    $fileName = if ($TransportService -eq 'FrontEnd') { 'fetagents.config' } else { 'agents.config' }
+    $path = Join-Path (Get-ExchangeInstallShare -ExchangeServer $ExchangeServer) ('TransportRoles\Shared\{0}' -f $fileName)
+    [xml]$xml = Get-Content -Path $path -ErrorAction Stop
+    $priority = 0
+    foreach ($agent in @($xml.configuration.mexRuntime.agentList.agent)) {
+        if ($null -eq $agent) { continue }
+        $priority++
+        [pscustomobject]@{
+            Identity              = [string]$agent.name
+            Enabled               = ([string]$agent.enabled -eq 'true')
+            Priority              = $priority
+            TransportAgentFactory = [string]$agent.classFactory
+            AssemblyPath          = [string]$agent.assemblyPath
+        }
+    }
+}
+
 function Invoke-AreaTransportAgents {
     [CmdletBinding()]
     param()
     $areaName = 'TransportAgents'
     foreach ($transportService in @('Hub', 'FrontEnd')) {
         try {
-            $sourceAgents = @(Get-TransportAgent -Server $script:SourceShort -TransportService $transportService -ErrorAction Stop)
-            $targetAgents = @(Get-TransportAgent -Server $script:TargetShort -TransportService $transportService -ErrorAction Stop)
+            $sourceAgents = @(Get-TransportAgentFromConfig -ExchangeServer $script:SourceExchangeServer -TransportService $transportService)
+            $targetAgents = @(Get-TransportAgentFromConfig -ExchangeServer $script:TargetExchangeServer -TransportService $transportService)
         }
         catch {
             Add-Change -Area $areaName -Identity $transportService -Property '(read)' -Status Failed -Message $_.Exception.Message
@@ -1129,7 +1151,6 @@ function Invoke-AreaTransportAgents {
             $label = '{0}\{1}\{2}' -f $script:TargetShort, $transportService, $agentName
             if ($null -eq $counterpart) {
                 $detail = $agent
-                try { $detail = Get-TransportAgent -Identity $agentName -Server $script:SourceShort -TransportService $transportService -ErrorAction Stop | Select-Object -First 1 } catch { }
                 Add-Change -Area $areaName -Identity $label -Property '(exists)' -SourceValue 'present' -TargetValue 'missing' -Status ReviewRequired `
                     -Message ('Copy the assembly and run: Install-TransportAgent -Name "{0}" -TransportService {1} -TransportAgentFactory "{2}" -AssemblyPath "{3}"; Enable-TransportAgent; Set-TransportAgent -Priority {4}' -f $agentName, $transportService, $detail.TransportAgentFactory, $detail.AssemblyPath, $agent.Priority)
                 continue

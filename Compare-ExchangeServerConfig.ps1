@@ -580,11 +580,33 @@ function Invoke-AreaSendConnectors {
     }
 }
 
+function Get-TransportAgentFromConfig {
+    # Get-TransportAgent has no Server parameter and only reads the server the shell is connected to, so the agent
+    # list is read from agents.config (Hub) or fetagents.config (FrontEnd) over the admin share instead. The file
+    # lists the agents in priority order with the same values Get-TransportAgent shows.
+    param($ExchangeServer, [string] $TransportService)
+    $fileName = if ($TransportService -eq 'FrontEnd') { 'fetagents.config' } else { 'agents.config' }
+    $path = Join-Path (Get-ExchangeInstallShare -ExchangeServer $ExchangeServer) ('TransportRoles\Shared\{0}' -f $fileName)
+    [xml]$xml = Get-Content -Path $path -ErrorAction Stop
+    $priority = 0
+    foreach ($agent in @($xml.configuration.mexRuntime.agentList.agent)) {
+        if ($null -eq $agent) { continue }
+        $priority++
+        [pscustomobject]@{
+            Identity              = [string]$agent.name
+            Enabled               = ([string]$agent.enabled -eq 'true')
+            Priority              = $priority
+            TransportAgentFactory = [string]$agent.classFactory
+            AssemblyPath          = [string]$agent.assemblyPath
+        }
+    }
+}
+
 function Invoke-AreaTransportAgents {
     $areaName = 'TransportAgents'
     foreach ($transportService in @('Hub', 'FrontEnd')) {
-        $sourceAgents = @(Get-TransportAgent -Server $script:SourceShort -TransportService $transportService -ErrorAction Stop)
-        $targetAgents = @(Get-TransportAgent -Server $script:TargetShort -TransportService $transportService -ErrorAction Stop)
+        $sourceAgents = @(Get-TransportAgentFromConfig -ExchangeServer $script:SourceExchangeServer -TransportService $transportService)
+        $targetAgents = @(Get-TransportAgentFromConfig -ExchangeServer $script:TargetExchangeServer -TransportService $transportService)
         foreach ($agent in $sourceAgents) {
             $name = [string]$agent.Identity
             if (-not $name) { continue }

@@ -42,8 +42,9 @@
     Parameters with an empty value on the source are left out by default, because a fresh server already has them
     empty and some parameter types refuse $null. Use -IncludeNullValues to write them anyway.
 
-    Requirements: Exchange Management Shell with at least View-Only Organization Management on the source. The
-    generated script needs Organization Management on the target. Windows PowerShell 5.1.
+    Requirements: Exchange Management Shell with at least View-Only Organization Management on the source, plus
+    read access to the admin share (C$) of the source for the transport agent list. The generated script needs
+    Organization Management on the target. Windows PowerShell 5.1.
 
 .PARAMETER SourceServer
     Name of the Exchange server to read.
@@ -693,14 +694,45 @@ try {
 }
 catch { Add-Line ('# ERROR: {0}' -f (Format-ErrorText -Text $_.Exception.Message)); Add-Warning $_.Exception.Message }
 
+function Get-ExchangeInstallShare {
+    # UNC path to the Exchange installation folder via the admin share. DataPath of Get-ExchangeServer points to the
+    # Mailbox folder under the installation root, so its parent is the root.
+    param($ExchangeServer)
+    $dataPath = [string]$ExchangeServer.DataPath
+    $installPath = 'C:\Program Files\Microsoft\Exchange Server\V15'
+    if ($dataPath) { $installPath = Split-Path -Path $dataPath -Parent }
+    return ('\\{0}\{1}' -f $ExchangeServer.Fqdn, ($installPath -replace '^([A-Za-z]):', '$1$$'))
+}
+
+function Get-TransportAgentFromConfig {
+    # Get-TransportAgent has no Server parameter and only reads the server the shell is connected to, so the agent
+    # list is read from agents.config (Hub) or fetagents.config (FrontEnd) over the admin share instead. The file
+    # lists the agents in priority order with the same values Get-TransportAgent shows.
+    param($ExchangeServer, [string] $TransportService)
+    $fileName = if ($TransportService -eq 'FrontEnd') { 'fetagents.config' } else { 'agents.config' }
+    $path = Join-Path (Get-ExchangeInstallShare -ExchangeServer $ExchangeServer) ('TransportRoles\Shared\{0}' -f $fileName)
+    [xml]$xml = Get-Content -Path $path -ErrorAction Stop
+    $priority = 0
+    foreach ($agent in @($xml.configuration.mexRuntime.agentList.agent)) {
+        if ($null -eq $agent) { continue }
+        $priority++
+        [pscustomobject]@{
+            Identity              = [string]$agent.name
+            Enabled               = ([string]$agent.enabled -eq 'true')
+            Priority              = $priority
+            TransportAgentFactory = [string]$agent.classFactory
+            AssemblyPath          = [string]$agent.assemblyPath
+        }
+    }
+}
+
 Add-Section 'Transport agents on the source (manual: copy the assembly, then run the Install line)'
 try {
     $found = 0
     foreach ($transportService in @('Hub', 'FrontEnd')) {
-        foreach ($agent in @(Get-TransportAgent -Server $script:SourceShort -TransportService $transportService -ErrorAction Stop)) {
+        foreach ($agent in @(Get-TransportAgentFromConfig -ExchangeServer $sourceExchangeServer -TransportService $transportService)) {
             $found++
             $detail = $agent
-            try { $detail = Get-TransportAgent -Identity ([string]$agent.Identity) -Server $script:SourceShort -TransportService $transportService -ErrorAction Stop | Select-Object -First 1 } catch { }
             Add-Line ('# {0} | {1} | enabled {2} | priority {3} | {4}' -f $transportService, $agent.Identity, $agent.Enabled, $agent.Priority, $detail.AssemblyPath)
             if ("$($detail.AssemblyPath)" -notmatch '\\Microsoft\\Exchange Server\\V15\\(Bin|TransportRoles)\\' -and "$($detail.AssemblyPath)" -ne '') {
                 Add-Line ('#   Install-TransportAgent -Name ''{0}'' -TransportService {1} -TransportAgentFactory ''{2}'' -AssemblyPath ''{3}''; Enable-TransportAgent -Identity ''{0}'' -TransportService {1}; Set-TransportAgent -Identity ''{0}'' -TransportService {1} -Priority {4}' -f $agent.Identity, $transportService, $detail.TransportAgentFactory, $detail.AssemblyPath, $agent.Priority)
