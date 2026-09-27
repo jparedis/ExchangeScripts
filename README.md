@@ -167,6 +167,22 @@ with the number of differences, so it can gate a change window.
 .\Compare-ExchangeServerConfig.ps1 -SourceServer EX01 -TargetServer EX02
 ```
 
+### Install-ExchangeSEServerIsolated.ps1
+
+Quick and dirty runbook for adding an Exchange SE Mailbox server to an existing organization without
+it taking part in client access or mail transport before it is configured. Three steps: `Setup`
+runs Exchange Setup unattended with `/DoNotStartTransport`, `Isolate` puts every server component in
+Inactive (maintenance mode, survives the reboot), points the Autodiscover SCP at the shared namespace
+and stops transport, `Release` sets everything back to Active once the configuration is done.
+Variables for the Setup path and the Autodiscover URI at the top of the file.
+
+```powershell
+.\Install-ExchangeSEServerIsolated.ps1 -Step Setup
+.\Install-ExchangeSEServerIsolated.ps1 -Step Isolate
+# reboot, configure with Copy-ExchangeServerConfig.ps1, check with Compare-ExchangeServerConfig.ps1
+.\Install-ExchangeSEServerIsolated.ps1 -Step Release
+```
+
 ## Author
 
 Jente Paredis, jentech consulting BV. jente@jentech.be
