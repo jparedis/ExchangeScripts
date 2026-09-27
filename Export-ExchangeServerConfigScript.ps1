@@ -649,7 +649,8 @@ try {
             -Exclude @('TransportRole', 'Usage') -BindingProperties @('Bindings')
 
         try {
-            foreach ($ace in @(Get-ADPermission -Identity ([string]$connector.Identity) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) {
+            # The distinguished name is used on purpose: Get-ADPermission does not resolve the Server\Name form reliably.
+            foreach ($ace in @(Get-ADPermission -Identity ([string]$connector.DistinguishedName) -ErrorAction Stop | Where-Object { -not [bool]$_.IsInherited })) {
                 $arguments = @()
                 $arguments += ('-User {0}' -f (ConvertTo-PsString -Text (Convert-ServerName -Value ([string]$ace.User))))
                 $extendedRights = ConvertTo-SettableValue -Value $ace.ExtendedRights
@@ -665,7 +666,7 @@ try {
                 if ($null -ne $properties) { $arguments += ('-Properties {0}' -f (ConvertTo-PsLiteral -Value ([string[]]$properties))) }
                 $inheritance = ConvertTo-SettableValue -Value $ace.InheritanceType
                 if ($null -ne $inheritance -and "$inheritance" -ne 'None') { $arguments += ('-InheritanceType {0}' -f $inheritance) }
-                Add-Line ('Add-ADPermission -Identity {0} {1} -Confirm:$false -WhatIf:$WhatIf | Out-Null' -f $identityText, ($arguments -join ' '))
+                Add-Line ('Add-ADPermission -Identity (Get-ReceiveConnector -Identity {0}).DistinguishedName {1} -Confirm:$false -WhatIf:$WhatIf | Out-Null' -f $identityText, ($arguments -join ' '))
             }
         }
         catch { Add-Line ('# ERROR reading permissions: {0}' -f (Format-ErrorText -Text $_.Exception.Message)); Add-Warning $_.Exception.Message }
