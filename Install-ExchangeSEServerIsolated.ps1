@@ -2,13 +2,16 @@
 
 <#
 .SYNOPSIS
-    Installs an extra Exchange SE Mailbox server into an existing organization and keeps it out of client access
-    and mail transport until the configuration is done.
+    Installs an Exchange SE Mailbox server, as the first server of a new organization or as an extra server in an
+    existing one, and keeps it out of client access and mail transport until the configuration is done.
 
 .DESCRIPTION
     Quick and dirty runbook in three steps. Adjust the variables at the top, then run each step in order.
 
       Setup     runs Exchange Setup unattended with /DoNotStartTransport so the transport services stay stopped.
+                Set $OrganizationName for a new organization, Setup then also prepares the schema, AD and all
+                domains, which needs an account in Schema Admins and Enterprise Admins. Leave it empty to add a
+                server to an existing organization.
       Isolate   run right after Setup finishes, before the reboot. Puts every server component in Inactive
                 (maintenance mode) so the server refuses SMTP and proxies no client traffic even after the
                 services start on the next reboot, and points the Autodiscover SCP at the shared namespace so
@@ -47,6 +50,7 @@ param(
 # Variables, adjust before running
 $SetupPath       = 'D:\Setup.exe'                              # mounted Exchange SE ISO
 $TargetDir       = 'C:\Program Files\Microsoft\Exchange Server\V15'
+$OrganizationName = ''                                          # new organization: set the name, existing: leave empty
 $AutodiscoverUri = 'https://autodiscover.contoso.com/Autodiscover/Autodiscover.xml'   # the shared namespace
 $Requester       = 'Maintenance'                               # must be the same for Inactive and Active
 
@@ -62,8 +66,9 @@ function Import-ExchangeSnapin {
 switch ($Step) {
 
     'Setup' {
-        # Existing organization, so no /OrganizationName. /InstallWindowsComponents adds the Windows features,
-        # /DoNotStartTransport leaves MSExchangeTransport and MSExchangeFrontEndTransport stopped after Setup.
+        # /InstallWindowsComponents adds the Windows features, /DoNotStartTransport leaves MSExchangeTransport and
+        # MSExchangeFrontEndTransport stopped after Setup. /OrganizationName only for the first server of a new
+        # organization, Setup then runs PrepareSchema, PrepareAD and PrepareAllDomains itself.
         $Arguments = @(
             '/Mode:Install',
             '/Roles:Mailbox',
@@ -72,6 +77,9 @@ switch ($Step) {
             '/DoNotStartTransport',
             "/TargetDir:`"$TargetDir`""
         )
+        if ($OrganizationName) {
+            $Arguments += "/OrganizationName:`"$OrganizationName`""
+        }
         Write-Host "Running: $SetupPath $($Arguments -join ' ')"
         $Process = Start-Process -FilePath $SetupPath -ArgumentList $Arguments -Wait -PassThru -NoNewWindow
         if ($Process.ExitCode -ne 0) {

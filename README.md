@@ -169,12 +169,14 @@ with the number of differences, so it can gate a change window.
 
 ### Install-ExchangeSEServerIsolated.ps1
 
-Quick and dirty runbook for adding an Exchange SE Mailbox server to an existing organization without
-it taking part in client access or mail transport before it is configured. Three steps: `Setup`
+Quick and dirty runbook for installing an Exchange SE Mailbox server, the first one of a new
+organization or an extra one in an existing organization, without it taking part in client access or
+mail transport before it is configured. Three steps: `Setup`
 runs Exchange Setup unattended with `/DoNotStartTransport`, `Isolate` puts every server component in
 Inactive (maintenance mode, survives the reboot), points the Autodiscover SCP at the shared namespace
 and stops transport, `Release` sets everything back to Active once the configuration is done.
-Variables for the Setup path and the Autodiscover URI at the top of the file.
+Variables for the Setup path, the organization name (new organization only) and the Autodiscover
+URI at the top of the file.
 
 ```powershell
 .\Install-ExchangeSEServerIsolated.ps1 -Step Setup
